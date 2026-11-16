@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('pet', {
   market: body => ipcRenderer.invoke('pet:market',body),
   onMarketProgress:callback=>{const listener=(_,value)=>callback(value);ipcRenderer.on('pet:market-progress',listener);return()=>ipcRenderer.removeListener('pet:market-progress',listener);},
   get: () => ipcRenderer.invoke('pet:get'),
+  board: body => ipcRenderer.invoke('pet:board',body),
   character:body=>ipcRenderer.invoke('pet:character',body),
   appearanceSheet: value => ipcRenderer.invoke('pet:appearance-sheet',value),
   settings: value => ipcRenderer.invoke('pet:settings',value),

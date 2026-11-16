@@ -1,17 +1,31 @@
 import {mkdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
+import {createServer} from 'node:http';
 import {PACKAGE_ROOT} from '../src/paths.js';
 import {request,readEndpoint} from '../src/bridge-client.js';
 
 export async function runDesktopSmoke({app,petWindow,openSettings,getSettingsWindow,dir,store}){
   const out=path.join(PACKAGE_ROOT,'artifacts','desktop-smoke');await mkdir(out,{recursive:true});
-  const results=[],failures=[];
+  const results=[],failures=[],boardRequests=[];let boardServer;
   const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   async function ready(win){if(win.webContents.isLoading())await new Promise(resolve=>win.webContents.once('did-finish-load',resolve));await pause(600);}
   function expect(value,message){results.push({message,pass:Boolean(value)});if(!value)failures.push(message);}
   try{
+    boardServer=createServer((req,res)=>{let body='';req.on('data',chunk=>{body+=chunk;});req.on('end',()=>{boardRequests.push({url:req.url,body});res.writeHead(200,{'Content-Type':'application/json'});res.end('{"ok":true}');});});
+    boardServer.listen(0,'127.0.0.1');await new Promise(resolve=>boardServer.once('listening',resolve));
     await ready(petWindow);openSettings();const dashboard=getSettingsWindow();await ready(dashboard);
     dashboard.webContents.on('console-message',event=>{if(/error|failed/i.test(event.message))failures.push(event.message);});
+    await dashboard.webContents.executeJavaScript("document.getElementById('openLedBoard').click()");await pause(150);
+    const boardUI=await dashboard.webContents.executeJavaScript("({states:document.querySelectorAll('[data-board-state]').length,visible:!document.getElementById('ledBoardView').hidden,canvas:document.getElementById('boardCanvas').getContext('2d').getImageData(0,0,384,384).data.some(v=>v>0)})");
+    expect(boardUI.states===8&&boardUI.visible&&boardUI.canvas,'LED board page loads eight states and a rendered editor');
+    await writeFile(path.join(out,'led-board.png'),(await dashboard.webContents.capturePage()).toPNG());
+    await dashboard.webContents.executeJavaScript(`document.getElementById('boardHost').value='127.0.0.1:${boardServer.address().port}';document.getElementById('boardEnabled').click()`);await pause(350);
+    expect(boardRequests.some(r=>r.url==='/pattern'&&r.body.length===2052),'LED board enable sends a real pattern from the workbench');
+    await dashboard.webContents.executeJavaScript("document.querySelector('[data-board-state=working]').click();document.getElementById('boardTest').click()");await pause(350);
+    expect(boardRequests.filter(r=>r.url==='/pattern').length>=2,'LED board state selection and test send another pattern');
+    await dashboard.webContents.executeJavaScript("document.getElementById('boardClear').click()");await pause(350);
+    expect(boardRequests.at(-1)?.url==='/clear','LED board disable restores the water background');
+    await dashboard.webContents.executeJavaScript("document.getElementById('showMyPets').click()");
     const assetReady=await dashboard.webContents.executeJavaScript(`(async()=>{try{const {readyPixelAssets}=await import('./pixel-pet.js');await readyPixelAssets();return 'ready';}catch(error){return error.stack||String(error);}})()`);
     expect(assetReady==='ready',`pixel action assets load: ${assetReady}`);
     const endpoint=await readEndpoint(dir);await request(endpoint,'/register',{instanceId:'desktop-smoke'});
@@ -150,5 +164,5 @@ export async function runDesktopSmoke({app,petWindow,openSettings,getSettingsWin
     const {checkCursorDesktop}=await import('./cursor-desktop-smoke.mjs');
     await checkCursorDesktop({dashboard,dir,store,out,expect});
   }catch(error){failures.push(error.stack);}
-  finally{await writeFile(path.join(out,'results.json'),JSON.stringify({results,failures},null,2));console.log(JSON.stringify({results,failures}));app.exit(failures.length?1:0);}
+  finally{if(boardServer)await new Promise(resolve=>boardServer.close(resolve));await writeFile(path.join(out,'results.json'),JSON.stringify({results,failures},null,2));console.log(JSON.stringify({results,failures}));app.exit(failures.length?1:0);}
 }

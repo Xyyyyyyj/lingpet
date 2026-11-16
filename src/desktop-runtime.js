@@ -37,6 +37,7 @@ import {downloadInstaller,launchInstaller} from './update/desktop-update.js';
 import {SettingsStore} from './settings-store.js';
 import {IntegrationManager} from './integrations/manager.js';
 import {startIntegrationGateway} from './integrations/gateway.js';
+import {LedBoard,LED_BOARD_STATES} from './led-board.js';
 import {existsSync} from 'node:fs';
 export async function launchDesktop(dir){
   await app.whenReady();await mkdir(dir,{recursive:true});
@@ -56,6 +57,7 @@ export async function launchDesktop(dir){
   let customAppearances=await loadCustomAppearances(dir);setCustomAppearances(customAppearances,customCharacters);
   const settingsStore=new SettingsStore(dir,raw=>{resolveAppearanceAliases(raw.pets,customAppearances);return new PetRegistry(raw).config;});
   const raw=await settingsStore.load();
+  const board=new LedBoard({dir});await board.init();
   const registry=new PetRegistry(raw),store=new StateStore(),windows=new Map(),views=new Map(),demos=new Map();
   let activePetId=registry.pets[0]?.id??null,settingsWindow,settingsReady,settingsDisplayReady=false,quickWindow,quickPetId,tray,server,quitting=false,updating=false,movingStorage=false;
   let contentRoot=PACKAGE_ROOT,release=await describeRelease(),saveQueue=Promise.resolve();
@@ -154,6 +156,7 @@ export async function launchDesktop(dir){
   }
   function broadcast(){
     if(quitting)return;
+    void board.sync(currentFor(activePetId).state);
     for(const [id,context] of windows)liveContents(context.window)?.send('pet:update',snapshot(id,false));
     liveContents(settingsWindow)?.send('pet:update',snapshot());
     if(quickWindow){const pet=registry.get(quickPetId);if(!pet?.enabled||!pet.petVisible)closeQuickControls();else liveContents(quickWindow)?.send('pet:quick-update');}
@@ -392,6 +395,18 @@ export async function launchDesktop(dir){
     await save();return {...result,snapshot:snapshot()};
   });
   ipcMain.handle('pet:appearance-sheet',(event,body)=>{if(!authorized(event))throw new Error('无效的窗口');return appearanceSheet(customAppearances,body);});
+  ipcMain.handle('pet:board',async(event,body)=>{
+    if(!isWindowSender(event,settingsWindow))throw new Error('仅工作台可管理灯板');
+    const action=body?.action||'get';
+    if(action==='get')return {...board.snapshot(),state:currentFor(activePetId).state};
+    if(action==='save'){const result=await board.save(body.value);broadcast();return result;}
+    if(action==='test'){
+      if(!LED_BOARD_STATES.includes(body.state))throw new Error('无效灯板状态');
+      const result=await board.sync(body.state,{force:true});broadcast();return result;
+    }
+    if(action==='clear'){const result=await board.save({...board.store.config,enabled:false});broadcast();return result;}
+    throw new Error('未知灯板操作');
+  });
   ipcMain.handle('pet:get',event=>{if(!authorized(event))throw new Error('无效的窗口');return snapshot(senderId(event)||activePetId);});
   ipcMain.handle('pet:manage',(event,body)=>{if(!isWindowSender(event,settingsWindow))throw new Error('仅工作台可管理其他桌宠');manage(body);return snapshot();});
   ipcMain.handle('pet:settings',async(event,value)=>{
